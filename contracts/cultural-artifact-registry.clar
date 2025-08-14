@@ -4,6 +4,8 @@
 (define-constant ERR_INVALID_METADATA (err u103))
 (define-constant ERR_STORY_NOT_FOUND (err u104))
 (define-constant ERR_ALREADY_EXISTS (err u105))
+(define-constant ERR_ALREADY_FAVORITED (err u106))
+(define-constant ERR_NOT_FAVORITED (err u107))
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var next-artifact-id uint u1)
@@ -61,6 +63,16 @@
     total-stories: uint,
     reputation-score: uint
   }
+)
+
+(define-map artifact-favorites
+  { user: principal, artifact-id: uint }
+  { favorited-at: uint }
+)
+
+(define-map user-favorites-count
+  { user: principal }
+  { count: uint }
 )
 
 (define-public (mint-artifact 
@@ -226,6 +238,49 @@
   )
 )
 
+(define-public (favorite-artifact (artifact-id uint))
+  (let
+    (
+      (current-time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
+      (current-count (get count (default-to { count: u0 } (map-get? user-favorites-count { user: tx-sender }))))
+      (artifact-exists (is-some (map-get? artifacts { artifact-id: artifact-id })))
+    )
+    (asserts! artifact-exists ERR_ARTIFACT_NOT_FOUND)
+    (asserts! (is-none (map-get? artifact-favorites { user: tx-sender, artifact-id: artifact-id })) ERR_ALREADY_FAVORITED)
+    
+    (map-set artifact-favorites
+      { user: tx-sender, artifact-id: artifact-id }
+      { favorited-at: current-time }
+    )
+    
+    (map-set user-favorites-count
+      { user: tx-sender }
+      { count: (+ current-count u1) }
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (unfavorite-artifact (artifact-id uint))
+  (let
+    (
+      (current-count (get count (default-to { count: u0 } (map-get? user-favorites-count { user: tx-sender }))))
+      (favorite-exists (is-some (map-get? artifact-favorites { user: tx-sender, artifact-id: artifact-id })))
+    )
+    (asserts! favorite-exists ERR_NOT_FAVORITED)
+    
+    (map-delete artifact-favorites { user: tx-sender, artifact-id: artifact-id })
+    
+    (map-set user-favorites-count
+      { user: tx-sender }
+      { count: (if (> current-count u0) (- current-count u1) u0) }
+    )
+    
+    (ok true)
+  )
+)
+
 (define-read-only (get-artifact (artifact-id uint))
   (map-get? artifacts { artifact-id: artifact-id })
 )
@@ -260,6 +315,18 @@
 
 (define-read-only (get-contract-owner)
   (var-get contract-owner)
+)
+
+(define-read-only (is-artifact-favorited (user principal) (artifact-id uint))
+  (is-some (map-get? artifact-favorites { user: user, artifact-id: artifact-id }))
+)
+
+(define-read-only (get-user-favorite (user principal) (artifact-id uint))
+  (map-get? artifact-favorites { user: user, artifact-id: artifact-id })
+)
+
+(define-read-only (get-user-favorites-count (user principal))
+  (default-to { count: u0 } (map-get? user-favorites-count { user: user }))
 )
 
 (define-private (update-user-stats (user principal) (artifacts-delta uint) (stories-delta uint))
