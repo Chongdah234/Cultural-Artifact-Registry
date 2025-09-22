@@ -6,9 +6,13 @@
 (define-constant ERR_ALREADY_EXISTS (err u105))
 (define-constant ERR_ALREADY_FAVORITED (err u106))
 (define-constant ERR_NOT_FAVORITED (err u107))
+(define-constant ERR_COLLECTION_NOT_FOUND (err u108))
+(define-constant ERR_ARTIFACT_NOT_IN_COLLECTION (err u109))
+(define-constant ERR_ARTIFACT_ALREADY_IN_COLLECTION (err u110))
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var next-artifact-id uint u1)
+(define-data-var next-collection-id uint u1)
 (define-data-var total-donations uint u0)
 
 (define-map artifacts
@@ -71,6 +75,27 @@
 )
 
 (define-map user-favorites-count
+  { user: principal }
+  { count: uint }
+)
+
+(define-map collections
+  { collection-id: uint }
+  {
+    creator: principal,
+    title: (string-ascii 100),
+    description: (string-ascii 300),
+    created-at: uint,
+    artifact-count: uint
+  }
+)
+
+(define-map collection-artifacts
+  { collection-id: uint, artifact-id: uint }
+  { added-at: uint }
+)
+
+(define-map user-collections-count
   { user: principal }
   { count: uint }
 )
@@ -281,6 +306,82 @@
   )
 )
 
+(define-public (create-collection
+  (title (string-ascii 100))
+  (description (string-ascii 300)))
+  (let
+    (
+      (collection-id (var-get next-collection-id))
+      (current-time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
+      (current-count (get count (default-to { count: u0 } (map-get? user-collections-count { user: tx-sender }))))
+    )
+    (asserts! (> (len title) u0) ERR_INVALID_METADATA)
+    (asserts! (> (len description) u0) ERR_INVALID_METADATA)
+    
+    (map-set collections
+      { collection-id: collection-id }
+      {
+        creator: tx-sender,
+        title: title,
+        description: description,
+        created-at: current-time,
+        artifact-count: u0
+      }
+    )
+    
+    (map-set user-collections-count
+      { user: tx-sender }
+      { count: (+ current-count u1) }
+    )
+    
+    (var-set next-collection-id (+ collection-id u1))
+    (ok collection-id)
+  )
+)
+
+(define-public (add-artifact-to-collection (collection-id uint) (artifact-id uint))
+  (let
+    (
+      (collection (unwrap! (map-get? collections { collection-id: collection-id }) ERR_COLLECTION_NOT_FOUND))
+      (artifact (unwrap! (map-get? artifacts { artifact-id: artifact-id }) ERR_ARTIFACT_NOT_FOUND))
+      (current-time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
+    )
+    (asserts! (is-eq tx-sender (get creator collection)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (map-get? collection-artifacts { collection-id: collection-id, artifact-id: artifact-id })) ERR_ARTIFACT_ALREADY_IN_COLLECTION)
+    
+    (map-set collection-artifacts
+      { collection-id: collection-id, artifact-id: artifact-id }
+      { added-at: current-time }
+    )
+    
+    (map-set collections
+      { collection-id: collection-id }
+      (merge collection { artifact-count: (+ (get artifact-count collection) u1) })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (remove-artifact-from-collection (collection-id uint) (artifact-id uint))
+  (let
+    (
+      (collection (unwrap! (map-get? collections { collection-id: collection-id }) ERR_COLLECTION_NOT_FOUND))
+      (artifact-in-collection (unwrap! (map-get? collection-artifacts { collection-id: collection-id, artifact-id: artifact-id }) ERR_ARTIFACT_NOT_IN_COLLECTION))
+    )
+    (asserts! (is-eq tx-sender (get creator collection)) ERR_NOT_AUTHORIZED)
+    
+    (map-delete collection-artifacts { collection-id: collection-id, artifact-id: artifact-id })
+    
+    (map-set collections
+      { collection-id: collection-id }
+      (merge collection { artifact-count: (if (> (get artifact-count collection) u0) (- (get artifact-count collection) u1) u0) })
+    )
+    
+    (ok true)
+  )
+)
+
 (define-read-only (get-artifact (artifact-id uint))
   (map-get? artifacts { artifact-id: artifact-id })
 )
@@ -327,6 +428,26 @@
 
 (define-read-only (get-user-favorites-count (user principal))
   (default-to { count: u0 } (map-get? user-favorites-count { user: user }))
+)
+
+(define-read-only (get-collection (collection-id uint))
+  (map-get? collections { collection-id: collection-id })
+)
+
+(define-read-only (get-next-collection-id)
+  (var-get next-collection-id)
+)
+
+(define-read-only (is-artifact-in-collection (collection-id uint) (artifact-id uint))
+  (is-some (map-get? collection-artifacts { collection-id: collection-id, artifact-id: artifact-id }))
+)
+
+(define-read-only (get-collection-artifact (collection-id uint) (artifact-id uint))
+  (map-get? collection-artifacts { collection-id: collection-id, artifact-id: artifact-id })
+)
+
+(define-read-only (get-user-collections-count (user principal))
+  (default-to { count: u0 } (map-get? user-collections-count { user: user }))
 )
 
 (define-private (update-user-stats (user principal) (artifacts-delta uint) (stories-delta uint))
