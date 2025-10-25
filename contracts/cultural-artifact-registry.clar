@@ -9,6 +9,7 @@
 (define-constant ERR_COLLECTION_NOT_FOUND (err u108))
 (define-constant ERR_ARTIFACT_NOT_IN_COLLECTION (err u109))
 (define-constant ERR_ARTIFACT_ALREADY_IN_COLLECTION (err u110))
+(define-constant ERR_INVALID_TRANSFER (err u111))
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var next-artifact-id uint u1)
@@ -100,6 +101,20 @@
   { count: uint }
 )
 
+(define-map artifact-transfers
+  { artifact-id: uint, transfer-id: uint }
+  {
+    from: principal,
+    to: principal,
+    transferred-at: uint
+  }
+)
+
+(define-map artifact-transfer-count
+  { artifact-id: uint }
+  { count: uint }
+)
+
 (define-public (mint-artifact 
   (title (string-ascii 100))
   (description (string-ascii 500))
@@ -132,6 +147,11 @@
     )
     
     (map-set artifact-story-count
+      { artifact-id: artifact-id }
+      { count: u0 }
+    )
+    
+    (map-set artifact-transfer-count
       { artifact-id: artifact-id }
       { count: u0 }
     )
@@ -382,6 +402,40 @@
   )
 )
 
+(define-public (transfer-artifact (artifact-id uint) (recipient principal))
+  (let
+    (
+      (artifact (unwrap! (map-get? artifacts { artifact-id: artifact-id }) ERR_ARTIFACT_NOT_FOUND))
+      (transfer-count-data (default-to { count: u0 } (map-get? artifact-transfer-count { artifact-id: artifact-id })))
+      (transfer-id (+ (get count transfer-count-data) u1))
+      (current-time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
+    )
+    (asserts! (is-eq tx-sender (get creator artifact)) ERR_NOT_AUTHORIZED)
+    (asserts! (not (is-eq tx-sender recipient)) ERR_INVALID_TRANSFER)
+    
+    (map-set artifacts
+      { artifact-id: artifact-id }
+      (merge artifact { creator: recipient })
+    )
+    
+    (map-set artifact-transfers
+      { artifact-id: artifact-id, transfer-id: transfer-id }
+      {
+        from: tx-sender,
+        to: recipient,
+        transferred-at: current-time
+      }
+    )
+    
+    (map-set artifact-transfer-count
+      { artifact-id: artifact-id }
+      { count: transfer-id }
+    )
+    
+    (ok true)
+  )
+)
+
 (define-read-only (get-artifact (artifact-id uint))
   (map-get? artifacts { artifact-id: artifact-id })
 )
@@ -448,6 +502,14 @@
 
 (define-read-only (get-user-collections-count (user principal))
   (default-to { count: u0 } (map-get? user-collections-count { user: user }))
+)
+
+(define-read-only (get-artifact-transfer (artifact-id uint) (transfer-id uint))
+  (map-get? artifact-transfers { artifact-id: artifact-id, transfer-id: transfer-id })
+)
+
+(define-read-only (get-artifact-transfer-count (artifact-id uint))
+  (default-to { count: u0 } (map-get? artifact-transfer-count { artifact-id: artifact-id }))
 )
 
 (define-private (update-user-stats (user principal) (artifacts-delta uint) (stories-delta uint))
