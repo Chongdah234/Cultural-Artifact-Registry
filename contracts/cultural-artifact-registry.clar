@@ -10,6 +10,9 @@
 (define-constant ERR_ARTIFACT_NOT_IN_COLLECTION (err u109))
 (define-constant ERR_ARTIFACT_ALREADY_IN_COLLECTION (err u110))
 (define-constant ERR_INVALID_TRANSFER (err u111))
+(define-constant ERR_ALREADY_ENDORSED (err u112))
+(define-constant ERR_NOT_ENDORSED (err u113))
+(define-constant ERR_CANNOT_ENDORSE_OWN (err u114))
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var next-artifact-id uint u1)
@@ -115,6 +118,19 @@
   { count: uint }
 )
 
+(define-map artifact-endorsements
+  { artifact-id: uint, endorser: principal }
+  { 
+    endorsed-at: uint,
+    endorsement-note: (string-ascii 200)
+  }
+)
+
+(define-map artifact-endorsement-count
+  { artifact-id: uint }
+  { count: uint }
+)
+
 (define-public (mint-artifact 
   (title (string-ascii 100))
   (description (string-ascii 500))
@@ -152,6 +168,11 @@
     )
     
     (map-set artifact-transfer-count
+      { artifact-id: artifact-id }
+      { count: u0 }
+    )
+    
+    (map-set artifact-endorsement-count
       { artifact-id: artifact-id }
       { count: u0 }
     )
@@ -436,6 +457,52 @@
   )
 )
 
+(define-public (endorse-artifact (artifact-id uint) (note (string-ascii 200)))
+  (let
+    (
+      (artifact (unwrap! (map-get? artifacts { artifact-id: artifact-id }) ERR_ARTIFACT_NOT_FOUND))
+      (current-time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
+      (endorsement-data (default-to { count: u0 } (map-get? artifact-endorsement-count { artifact-id: artifact-id })))
+    )
+    (asserts! (not (is-eq tx-sender (get creator artifact))) ERR_CANNOT_ENDORSE_OWN)
+    (asserts! (is-none (map-get? artifact-endorsements { artifact-id: artifact-id, endorser: tx-sender })) ERR_ALREADY_ENDORSED)
+    
+    (map-set artifact-endorsements
+      { artifact-id: artifact-id, endorser: tx-sender }
+      { 
+        endorsed-at: current-time,
+        endorsement-note: note
+      }
+    )
+    
+    (map-set artifact-endorsement-count
+      { artifact-id: artifact-id }
+      { count: (+ (get count endorsement-data) u1) }
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (revoke-endorsement (artifact-id uint))
+  (let
+    (
+      (endorsement-data (default-to { count: u0 } (map-get? artifact-endorsement-count { artifact-id: artifact-id })))
+    )
+    (asserts! (is-some (map-get? artifacts { artifact-id: artifact-id })) ERR_ARTIFACT_NOT_FOUND)
+    (asserts! (is-some (map-get? artifact-endorsements { artifact-id: artifact-id, endorser: tx-sender })) ERR_NOT_ENDORSED)
+    
+    (map-delete artifact-endorsements { artifact-id: artifact-id, endorser: tx-sender })
+    
+    (map-set artifact-endorsement-count
+      { artifact-id: artifact-id }
+      { count: (if (> (get count endorsement-data) u0) (- (get count endorsement-data) u1) u0) }
+    )
+    
+    (ok true)
+  )
+)
+
 (define-read-only (get-artifact (artifact-id uint))
   (map-get? artifacts { artifact-id: artifact-id })
 )
@@ -510,6 +577,18 @@
 
 (define-read-only (get-artifact-transfer-count (artifact-id uint))
   (default-to { count: u0 } (map-get? artifact-transfer-count { artifact-id: artifact-id }))
+)
+
+(define-read-only (get-endorsement (artifact-id uint) (endorser principal))
+  (map-get? artifact-endorsements { artifact-id: artifact-id, endorser: endorser })
+)
+
+(define-read-only (get-artifact-endorsement-count (artifact-id uint))
+  (default-to { count: u0 } (map-get? artifact-endorsement-count { artifact-id: artifact-id }))
+)
+
+(define-read-only (has-endorsed (endorser principal) (artifact-id uint))
+  (is-some (map-get? artifact-endorsements { artifact-id: artifact-id, endorser: endorser }))
 )
 
 (define-private (update-user-stats (user principal) (artifacts-delta uint) (stories-delta uint))
